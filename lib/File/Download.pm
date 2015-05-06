@@ -1,13 +1,20 @@
 package File::Download;
 
 # use 'our' on v5.6.0
-use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS $DEBUG);
-
-$DEBUG = 0;
-$VERSION = '0.3';
-
+#use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS $DEBUG);
 use base qw(Class::Accessor);
-File::Download->mk_accessors(qw(mode overwrite outfile flength size status user_agent));
+File::Download->mk_accessors(qw('mode' 'DEBUG' 'overwrite' 'outfile' 'flength' 'size' 'status' 'user_agent'));
+
+use 5.006_001; use 5.6.1;	
+my $self;
+
+my $DEBUG = 0;
+$File::Download::VERSION = '0.3_050601'; #perl 5.6.1 version May, 2015 Matt Pagel
+
+FILE::Download->mk_accessors_ro(qw('VERSION'));
+
+$self->{DEBUG} = $DEBUG;
+$self->{VERSION} = $VERSION;
 
 # We are exporting functions
 use base qw/Exporter/;
@@ -28,7 +35,7 @@ $SIG{INT} = sub { die "Interrupted\n"; };
 $| = 1;  # autoflush
 
 sub download {
-    my $self = shift;
+    our ($self) = shift;
     my ($url) = @_;
     my $file;
     $self->{user_agent} = LWP::UserAgent->new(
@@ -309,5 +316,6 @@ Fetch the newest and greatest perl version:
 
 Gisle Aas <gisle@aas.no> - original B<lwp-download> script
 Byrne Reese <byrne@majordojo.com> - perl module wrapper
+Matt Pagel <pagel@cs.wisc.edu> - update for perl > 5.6.0
 
 =cut

@@ -1,11 +1,15 @@
+use strict;
+use warnings;
+use 5.006_001; use 5.6.1; #5.6.0 may work as well, but we may as well require a step up.
 use ExtUtils::MakeMaker;
+use Cwd qw(cwd getcwd);
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 WriteMakefile(
     'NAME'	=> 'File::Download',
-    'VERSION_FROM'	=> 'lib/File/Download.pm',
+    'VERSION_FROM'	=> cwd().'/'.'lib/File/Download.pm',
     'ABSTRACT'  => "A simple module for file downloading",
-    'AUTHOR'    => 'Byrne Reese <byrne@majordojo.com>',
+    'AUTHOR'    => 'Byrne Reese <byrne@majordojo.com> and Matt Pagel <pagel@cs.wisc.edu>',
     'DISTNAME'  => 'File-Download',
 #    'LICENSE'   => 'perl',
     'LIBS'	=> [''],   # e.g., '-lm' 
@@ -23,8 +27,8 @@ use inc::Module::Install;
 
 name('File-Download');
 abstract('A simple file download module');
-author('Byrne Reese <byrne@majordojo.com>');
-version_from('lib/File/Download.pm');
+author('Byrne Reese <byrne@majordojo.com> and Matt Pagel <pagel@cs.wisc.edu>');
+version_from(cwd().'/'.'lib/File/Download.pm');
 license('perl');
 no_index(directory => 't');
 sign(0);
@@ -35,6 +39,7 @@ requires('LWP::UserAgent');
 requires('LWP::MediaTypes');
 requires('URI');
 requires('HTTP::Date');
+requires('Class::Accessor');
 
 features(
     'Downloader' => [
