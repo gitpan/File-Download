@@ -3,7 +3,7 @@ package File::Download;
 # use 'our' on v5.6.0
 #use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS $DEBUG);
 use base qw(Class::Accessor);
-File::Download->mk_accessors(qw('mode' 'DEBUG' 'overwrite' 'outfile' 'flength' 'size' 'status' 'user_agent'));
+File::Download->mk_accessors(qw('mode' 'DEBUG' 'overwrite' 'outfile' 'flength' 'size' 'user_agent'));
 
 use 5.006_001; use 5.6.1;	
 my $self;
@@ -11,7 +11,7 @@ my $self;
 my $DEBUG = 0;
 $File::Download::VERSION = '0.3_050601'; #perl 5.6.1 version May, 2015 Matt Pagel
 
-FILE::Download->mk_accessors_ro(qw('VERSION'));
+File::Download->mk_ro_accessors(qw('VERSION' 'status'));
 
 $self->{DEBUG} = $DEBUG;
 $self->{VERSION} = $VERSION;
@@ -39,7 +39,7 @@ sub download {
     my ($url) = @_;
     my $file;
     $self->{user_agent} = LWP::UserAgent->new(
-	agent => "File::Download/$VERSION ",
+	agent => "$File::Download::VERSION ",
 	keep_alive => 1,
 	env_proxy => 1,
 	) if !$self->{user_agent};
