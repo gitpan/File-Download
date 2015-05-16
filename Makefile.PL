@@ -40,6 +40,7 @@ requires('LWP::MediaTypes');
 requires('URI');
 requires('HTTP::Date');
 requires('Class::Accessor');
+requires('File::Spec');
 
 features(
     'Downloader' => [
@@ -49,6 +50,7 @@ features(
         'LWP::MediaTypes' => 1,
         'URI' => 1,
         'HTTP::Date' => 1,
+        'File::Spec' => 1,
     ],
 );
 
