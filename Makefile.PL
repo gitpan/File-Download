@@ -39,7 +39,7 @@ requires('LWP::UserAgent');
 requires('LWP::MediaTypes');
 requires('URI');
 requires('HTTP::Date');
-requires('Class::Accessor');
+requires('Class::Accessor::Constructor');
 requires('File::Spec');
 
 features(
