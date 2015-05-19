@@ -30,6 +30,7 @@ has 'autodelete' => (is => 'rw'); #probably tied to overwrite
 has 'mode' => (is => 'rw'); # 'b' for binary, 'a' for ASCII
 has 'result' => (is => 'rw'); # Provides access to the result of the 
 has 'completion_status' => (is => 'rw'); #0 is not yet initiated; #1 when the filenames have been determined and we are good to go. #2 when done
+has 'remote_url' => (is => 'rw');
 
 # has 'VERSION' => (is => 'ro'); # Don't need this - set via explicit definition. Otherwise cpan won't compile it right.
 
@@ -49,7 +50,8 @@ use constant DEFAULTS => #used by the constructor
      DEBUG => 0,
      overwrite => 1,
      flength => 0,
-     status => 'not started',
+     status => "not started\n",
+     remote_url => "http://",
      username => 'not supported',
      password => 'not supported',
      start_t => 0,
@@ -79,11 +81,12 @@ $| = 1;  # autoflush
 sub set_local_filename  {
     #call this with $self->set_local_filename internally
     my $self = shift;
-    our ($res, $url);
+    my $res_ref = shift;
+#    my ($url_ref) = @_;
     my $lclout;
     my ($vol, $dir);
-    $self->{local_dir_path} = undef; #don't trust the end-user
-    $self->{local_file_name} = undef;
+    undef $self->{local_dir_path}; #don't trust the end-user
+    undef $self->{local_file_name};
     if (defined $self->{outfile}) {
         $lclout = File::Spec->rel2abs($self->{outfile}); #if already an absolute path, it'll clean this up
         ($vol, $dir, $self->{local_file_name}) = File::Spec->splitpath($lclout);
@@ -100,60 +103,63 @@ sub set_local_filename  {
     unless (defined $lclout && length($lclout)) { #$outfile wasn't defined in the block to follow
     # find a suitable name to use
         $self->{status} .= "outfile not defined\n";
-        $lclout = $res->filename; #look for header tag that defines tag
+        $lclout = $$res_ref->filename; #look for header tag that defines tag
     		# if this fails we try to make something from the URL
         unless ($lclout) {
             $self->{status} .= "file name not defined in header\n";
-    		my $req = $res->request;  # not always there
-    		my $rurl = $req ? $req->url : $url;
+    		my $req = $$res_ref->request;  # not always there
+    		my $rurl = $req ? $req->url : $self->{remote_url};
     		$lclout = ($rurl->path_segments)[-1];
             if (!defined($lclout) || !length($lclout)) {
         		$lclout = "index";
-        		my $suffix = media_suffix($res->content_type);
+        		my $suffix = media_suffix($$res_ref->content_type);
         		$lclout .= ".$suffix" if $suffix;
     		} elsif ($rurl->scheme eq 'ftp' ||
-                     $lclout =~ /\.t[bg]z$/   ||
-                     $lclout =~ /\.tar(\.(Z|gz|bz2?))?$/
-                    ) { #do nothing else to the name
+                 $lclout =~ /\.t[bg]z$/   ||
+                 $lclout =~ /\.tar(\.(Z|gz|bz2?))?$/
+                ) { #do nothing else to the name
             } else {
-                $self->{status} .= "guessing media type\n";
-                my $ct = guess_media_type($lclout);
-        		unless ($ct eq $res->content_type) {
-        			# need a better suffix for this type
-        			my $suffix = media_suffix($res->content_type);
-                    $lclout .= ".$suffix" if $suffix;
-        		}
-    		}
-        }
+              $self->{status} .= "guessing media type\n";
+              my $ct = guess_media_type($lclout);
+							unless ($ct eq $$res_ref->content_type) {
+								# need a better suffix for this type
+								my $suffix = media_suffix($$res_ref->content_type);
+							  $lclout .= ".$suffix" if $suffix;
+							}
+						}
+				}
     } #even if it was previously defined, we should probably do these checks...unless the download has already started and connection is valid
+		$self->{status} .= "going to try to use name $lclout locally\n";
     if ($self->{completion_status} == 0) {
         # validate that we don't have a harmful local filename now.  The server
     	# might try to trick us into doing something bad.
         if ($lclout && !length($lclout) || $lclout =~ s/([^a-zA-Z0-9_\.\-\+\~])/sprintf "\\x%02x", ord($1)/ge) {
-            die "Will not save <$url> as \"$lclout\".\nPlease override file name on the command line.\n";
-        } if (defined $self->{local_dir_path}) {
-            $self->{status} .= "output directory specified\n";
-    		$lclout = File::Spec->catfile($self->{local_dir_path}, $lclout); #the variable now has a full path
+            die "Will not save <".$self->{remote_url}."> as \"$lclout\".\nPlease override file name on the command line.\n";
+        }
+				if (defined $self->{local_dir_path}) {
+					$self->{status} .= "output directory specified\n";
+					$lclout = File::Spec->catfile($self->{local_dir_path}, $lclout); #the variable now has a full path
         } else {
             #we're good...the variable was just a filename to begin with.... Do nothing
+						$self->{status} .= "filename $lclout approved\n"
         }
  		# Check if the file is already present
         if (-l $lclout) {
-    		die "Will not save <$url> to link \"$lclout\".\nPlease change filename.\n";
+    		die "Will not save <".$self->{remote_url}."> to link \"$lclout\".\nPlease change filename.\n";
         } elsif (-f _) { #if it's a plain file...whatever that is
-    		die "Will not save <$url> as \"$lclout\" without verification.\Use overwrite parameter.\n"
+    		die "Will not save <".$self->{remote_url}."> as \"$lclout\" without verification.\Use overwrite parameter.\n"
     		unless -t; #unless generated by a terminal?  is this really what we want?
             $self->{status} .= "override check\n";
-            return undef if (!$self->{overwrite}); #was: return 1..which we've switched to 0 to be consistent with true/false
+            return 0 if (!$self->{overwrite}); #was: return 1..which we've switched to 0 to be consistent with true/false; undef possible?
         } elsif (-e _) { #if the file already exists...
-            unless ($self->{overwrite}) { die "Will not save <$url> as \"$lclout\".  Path exists.\n" } #overwrite bit added MP
+            unless ($self->{overwrite}) { die "Will not save <".$self->{remote_url}."> as \"$lclout\".  Path exists.\n" } #overwrite bit added MP
         } else { # file doesn't yet exist on the system...do nothing to stop it from saving.
         }
     	$self->{status} .= "Saving to '$lclout'...\n";
     } else {
         if (defined $self->{local_dir_path}) {
             $self->{status} .= "output directory specified\n";
-    		$lclout = File::Spec->catfile($self->{local_dir_path}, $lclout);
+						$lclout = File::Spec->catfile($self->{local_dir_path}, $lclout);
         }
     }
     return $lclout;
@@ -162,21 +168,25 @@ sub set_local_filename  {
 sub download {
     #call this with $self->download where $self is an object of class File::Download
     my $self = shift;
-    my ($url) = @_;
+    ($self->{remote_url}) = @_;
     my $file; #$file is the local filename and should be $localDirPath."/".$localFileName
     $self->{user_agent} = LWP::UserAgent->new( agent => __PACKAGE__."::".__PACKAGE__->VERSION." ", keep_alive => 1, env_proxy => 1, ) if !$self->{user_agent};
-    our $DL_innerSub = sub {
-        $self->{status} = "Beginning download\n";
-        my ($chunk,$res,$protocol) = @_;
-        if (!defined $file || $self->{completion_status}==0) {#begin undefined $file section
+#    $self->{result} = $ua->request(HTTP::Request->new(GET => $url), &$DL_innerSub);
+    $self->{result} = $self->{user_agent}->request(HTTP::Request->new(GET => $self->{remote_url}), sub { 
+        my ($chunk, $res, $protocol) = @_; #shift;
+#        $self->{result} = shift;
+#        my $protocol = @_;
+        if (defined $self->{user_agent}->cookie_jar) {$self->{user_agent}->cookie_jar->extract_cookies($res) }
+        $self->{status} = "Beginning download; len: ".length($chunk)."; ".$res." via $protocol\n";
+        if ((!defined $file) ) {#begin undefined $file section ... had || ($self->{completion_status}==0) here...
             $self->{status} .= "file name not predefined\n";
-            $file = $self->set_local_filename();
+            $file = $self->set_local_filename(\$res);
             if (!defined $file) { #we failed to set the filename...exit
                 $self->{status} .= "failed to set filename...exiting...\n";
                 return 0;
             }            
-            #moved reorganized file opening code
-            if ($self->{completion_status} == 0) {
+            #reorganized file opening code
+            if (($self->{completion_status} == 0) || (!fileno(FILE))) {
                 open(FILE, ">$file") || die "Can't open $file: $!\n";
                 binmode FILE unless $self->{mode} eq 'a';
                 $self->{start_t} = time;
@@ -213,18 +223,17 @@ sub download {
 	      $self->{status} .= "Finished? " . fbytes($self->{size}) . " received in ".time - $self->{start_t}." seconds\n";
           $self->{completion_status} = 2;
         }
-      }; #end innersub
-        
+      }); #end innersub
+
 ########## Back to main Download
-    my $ua = $self->{user_agent};
- #   my $dl_req = HTTP::Request->new(GET => $url),
-    my $res = $ua->request(HTTP::Request->new(GET => $url), $DL_innerSub);
     # from LWP user manual :
     # You are allowed to use a CODE reference as content in the request object passed in.
     # The content function should return the content when called. The content can be returned in chunks.
     # The content function will be invoked repeatedly until it return an empty string to signal that there is no more content.
+
+   $self->{user_agent}->cookie_jar->extract_cookies($self->{result});
+# $self->{result} = $res; #for any debugging
     my $diecode;
-    $self->{result} = $res; #for any debugging
     if (fileno(FILE)) { #check if file is assigned a file number
     	close(FILE) || die "Can't write to $file: $!\n";
 #        my $bob = $self->{status};
@@ -232,11 +241,11 @@ sub download {
     	if ($dur) {
     	    my $speed = fbytes($self->{size}/$dur) . "/sec";
     	}
-    	if (my $mtime = $res->last_modified) {
+    	if (my $mtime = $self->{result}->last_modified) {
     	    utime time, $mtime, $file;
     	}
-    	if ($res->header("X-Died") || !$res->is_success) {
-    	    if (my $died = $res->header("X-Died")) {
+    	if ($self->{result}->header("X-Died") || !$self->{result}->is_success) {
+    	    if (my $died = $self->{result}->header("X-Died")) {
                 $self->{status} .= $died.".....\n";
     	    }
     	    if (-t) { #is this for piping?
@@ -246,15 +255,16 @@ sub download {
                 } elsif ($self->{length} > $self->{size}) {
                     $self->{status} .= "Aborted. Truncated file kept: " . fbytes($self->{length} - $self->{size}) . " missing.\n";
                 }
-                $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus:%s\n", $res, $res->as_string, $res->content, $res->decoded_content, $res->message, $self->{status});
+                $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
                 return 0; # Houston, we have a problem?
     	    } else {
                 $self->{status} .= "Transfer aborted, $file kept\n";
-                $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus:%s\n", $res, $res->as_string, $res->content, $res->decoded_content, $res->message, $self->{status});
+                $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
 #                die $diecode;
+				return 0;
     	    }
     	}
-        $self->{status} .= "Success or partial file kept: ".$self->{size}."/".$self->{length};
+        $self->{status} .= "Success: ".$self->{size}."/".$self->{length};
 #        $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus=success::%s\n", $res, $res->as_string, $res->content, $res->decoded_content, $res->message, $self->{status});
     	return 1; #good
     } else { #the file is already closed?
@@ -265,7 +275,7 @@ sub download {
             if (!defined $self->{length}) {$self->{length} = -1}
             $self->{status} .= "File already closed? ".$self->{size}."/".$self->{length}."\n";
         }
-        $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus=filealreadycreated:%s\n", $res, $res->as_string, $res->content, $res->decoded_content, $res->message, $self->{status});
+        $diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus=filealreadycreated:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
         return 0; #baaaaaad
     }
 }
