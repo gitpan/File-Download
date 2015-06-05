@@ -15,11 +15,12 @@ package File::Download;
 # $File::Download::DEBUG = 0;
 # $File::Download::VERSION = '0.4_050601'; #perl 5.6.1 version May, 2015 Matt Pagel
 =cut
-use Class::Accessor::Constructor 'antlers'; # Switching to moose-like 'antler' mode. Also need a "new" constructor.
+use Class::Accessor::Constructor 'antlers';	# Switching to moose-like 'antler' mode. Also need a "new" constructor.
 has 'outfile' => (is => 'rw');				# name or directory to use on the local system
 has 'overwrite' => (is => 'rw');				# overwrite file if it already exists locally (1).
 has 'refresh' => (is => 'rw');				# update stale files
-has 'last_mod_time' => (is => 'rw');		# if outfile is a directory, this prevents the 2nd or 3rd file downloaded in a batch from checking if its version has been updated since the first file in that batch was started
+has 'last_mod_time' => (is => 'rw');		# initially set by either reading a config file or via $self->check_local_timestamp("filename")
+has 'ETag' => (is => 'rw');					# initially set by a reading a config file and then sets the If-None-Match field; gets re-set by this method by the HTTP::Response ETag field
 has 'user_agent' => (is => 'rw');			# allows us to pass in cookies
 has 'username' => (is => 'rw');				# not supported
 has 'password' => (is => 'rw');				# not supported
@@ -66,12 +67,13 @@ $FILE::DOWNLOAD::VERSION = '0.4_050601' unless defined $FILE::DOWNLOAD::VERSION;
 use LWP::UserAgent (); # Include, but require explicit reference to functions inside to use
 use LWP::MediaTypes qw(guess_media_type media_suffix);
 use URI ();
-use HTTP::Date ();
+use HTTP::Date qw(str2time time2str);
 use HTTP::Request ();
 use HTTP::Response ();
 use File::Spec ();
 use Cwd qw(cwd getcwd);
 use File::stat qw(stat);
+# use Config::IniFiles ();
 
 sub DESTROY { }
 
@@ -79,6 +81,7 @@ $SIG{INT} = sub { die "Interrupted\n"; };
 $| = 1;	# autoflush
 
 ### note to self: consider checking the outfile/outdir for last modified time; then set HTTP If-Modified-Since header on the request
+
 
 sub set_local_dir_get_fname { # checks local_dir_path parameter or sets it according to the outfile parameter; returns the filename portion
 	my $self = shift;
@@ -147,7 +150,7 @@ sub set_local_filename	{ # call this with $self->set_local_filename(\$res) inter
 			}
 		}
 	} # even if the filename was previously defined, we should probably do the checks to follow...unless the download has already started and connection is valid
-	$self->{local_file_name} = $lclout;	# writeback
+	$self->{local_file_name} = $lclout unless ($$res_ref->is_error || $$res_ref->is_redirect);	# writeback
 	$self->{status} .= "going to try to use name $lclout locally\n";
 	if ($self->{completion_status} == 0) {
 		# validate that we don't have a harmful local filename now.	The server might try to trick us into doing something bad.
@@ -173,7 +176,11 @@ sub set_local_filename	{ # call this with $self->set_local_filename(\$res) inter
 			unless ($self->{overwrite}) { die "Will not save <".$self->{remote_url}."> as \"$lclout\". Path exists.\n" } # overwrite flag added MP; further add update flag?
 		} else { # file doesn't yet exist on the system...do nothing to stop it from saving.
 		}
-		$self->{status} .= "Saving to '$lclout'...\n";
+		if ($$res_ref->is_error || $$res_ref->is_redirect) {
+			$self->{status} .= "should refuse to use $lclout due to error code ".$$res_ref->code
+		} else {
+			$self->{status} .= "Saving to '$lclout'...\n";
+		}
 	} else {
 		if (defined $self->{local_dir_path}) {
 			$self->{status} .= "output directory specified\n";
@@ -196,7 +203,7 @@ sub check_local_timestamp {
 			if (defined $remURL) {
 				my ($vol, $dir, $local_fn) = File::Spec->splitpath($remURL);
 				$fn = $local_fn; # Need this value to be blank to properly process first time through set_local_filename
-			}			
+			}
 		}
 	}
 	if (defined $fn && $fn ne '') {
@@ -214,29 +221,71 @@ sub check_local_timestamp {
 	}
 }
 
+sub lintWorkAround {
+	my $self = shift;
+	my $freshcode = 304;
+	my $LintErrorWorkAroundNumber = 500;
+	my $grepTitle = "Rack::Lint::LintError";
+	my $grepTxt = "Content-Length header found in $freshcode response";
+	my ($helptxt, $retcode);
+	if ($self->{refresh}) {
+		if ($self->result->code == $LintErrorWorkAroundNumber) {
+			if ((defined $self->result->header("Title")) && ($self->result->header("Title") =~ /$grepTitle/)) {
+				if ($self->result->as_string() =~ /$grepTxt/) {
+					$helptxt = "The server attempted to return a $freshcode response indicating that the current file version is up-to-date, but then caused itself to choke.\n";
+					$helptxt .= "This is because Rack::Lint server-side inappropriately throws an error on the $freshcode responses by nginx and Unicorn, which are attempting to report the size of the matching file.\n";
+					$self->result->code($freshcode); # Pretend this never happened :)
+					$self->{completion_status} = 2;
+					$retcode = 1; #1;
+				} else {
+					$helptxt = $self->result->as_string()."\nThere was an internal server error. Examine for a $freshcode string\n\n";
+					$retcode = 0;
+				}
+			} else { # no title match
+				$helptxt = $self->result->headers_as_string()."Lint or other $LintErrorWorkAroundNumber Error detected in the above; not $freshcode\n";
+				$retcode = 0;
+			}
+		} elsif ($self->result->code == $freshcode) {
+			$helptxt = "Fresh content detected ($freshcode)\n";
+			$self->{completion_status} = 2;
+			$retcode = 1; #1;
+		} else { # no lint error
+			$helptxt = $self->result->code." must not be $LintErrorWorkAroundNumber; Must not be $freshcode either\n";
+			$retcode = 0;
+		}
+	} else {
+		$helptxt = "Confusion ensues. We shouldn't have been looking at headers.\n";
+		$retcode = 0;
+	}
+	$self->{status} .= $helptxt;
+#	warn "\n".$helptxt;
+	return $retcode
+}
+
 sub download { # call this with $self->download($url) where $self is an object of class File::Download and $url is the string of an URL/URI
 	my $self = shift;
 	($self->{remote_url}) = @_;
-	my $local_timestamp;
+	my $error_made_fresh = 0;
+	my $freshcode = 304;
 	if (!$self->{completion_status}) {
 		undef $self->{local_dir_path};	# don't trust the end-user
 		undef $self->{local_file_name};	# don't trust the end-user
 	}
-	my $fil = $self->set_local_dir_get_fname();
-	if ($fil ne '' && $self->{refresh}) {
-		if (defined $self->{last_mod_time} && $self->{last_mod_time}) {
-			$local_timestamp = $self->{last_mod_time}
-		} else {
-			$local_timestamp = $self->check_local_timestamp($fil)
-		}
-	}
+#	my $fil = $self->set_local_dir_get_fname();
+#	if ($fil ne '' && $self->{refresh}) {
+#		if (defined $self->{last_mod_time} && $self->{last_mod_time}) { $local_timestamp = $self->{last_mod_time} }
+#		else {$local_timestamp = time2str(1)} #$local_timestamp = $self->check_local_timestamp($fil)
+#		if (defined $self->{ETag} && $self->{ETag}) {
+			#code
+#		}
+#	}
 	my $file; #new variable to ensure we call the whole filename builder.
 #	$file is the local filename and should be $localDirPath."/".$localFileName
 	$self->{user_agent} = LWP::UserAgent->new(agent => __PACKAGE__."::".__PACKAGE__->VERSION." ", keep_alive => 1, env_proxy => 1,) if !$self->{user_agent};
 #	$self->{result} = $ua->request(HTTP::Request->new(GET => $url), &$DL_innerSub); # breaking this out seems to lose some of the variable definitions. Maybe would work with proper prototyping
-	if ($self->{refresh} && defined $local_timestamp) {
-		$self->{user_agent}->default_header('If-Modified-Since' => $local_timestamp);
-		$self->{last_mod_time} = $local_timestamp
+	if ($self->{refresh}) {
+		if (defined $self->{last_mod_time} && $self->{last_mod_time}) { $self->{user_agent}->default_header('If-Modified-Since' => $self->{last_mod_time}) }
+		if (defined $self->{ETag} && $self->{ETag}) { $self->{user_agent}->default_header('If-None-Match' => $self->{ETag}) }
 	}
 	$self->{result} = $self->{user_agent}->request(HTTP::Request->new(GET => $self->{remote_url}), sub { 
 		my ($chunk, $res, $protocol) = @_; # 'shift' first if inner sub?
@@ -296,18 +345,37 @@ sub download { # call this with $self->download($url) where $self is an object o
 #	The content function will be invoked repeatedly until it return an empty string to signal that there is no more content.
 	if (defined $self->{user_agent}->cookie_jar) { $self->{user_agent}->cookie_jar->extract_cookies($self->{result}) }
 	my $diecode;	# consider writing this to status
+	my $mtime;
+	if ($self->{refresh}) {
+		if ($self->result->code == $freshcode) {
+			if (defined $self->{result}->header("ETag")) { $self->{ETag} = $self->{result}->header("ETag") }
+			if (defined $self->{result}->header("Last-Modified")) { $self->{last_mod_time} = $self->{result}->header("Last-Modified") }
+			elsif (defined $self->{result}->header("Date")) { $self->{last_mod_time} = $self->{result}->header("Date") }
+			$self->{status} .= "File seems fresh\n"
+		} elsif ($self->result->is_error) { # || $self->result->is_redirect) {
+			$error_made_fresh = $self->lintWorkAround(); #do not set headers
+			warn $self->{remote_url}." result. procedure: $error_made_fresh\tfinal error: ".$self->result->code."\n";
+		}
+	}
 	if (fileno(FILE)) { # check if file is assigned a file number
 		close(FILE) || die "Can't write to $file: $!\n";
 		my $dur = time - $self->{start_t}; # total duration
 		if ($dur) { my $speed = fbytes($self->{size}/$dur) . "/sec"; }
-		if (my $mtime = $self->{result}->last_modified) { # set access time to current, set modified time to server's modified time; otherwise use start_t as the modified time?
+		if (defined $self->{result}->header("Last-Modified")) { $mtime = $self->{result}->header("Last-Modified") }
+		elsif (defined $self->{result}->header("Date")) { $mtime = $self->{result}->header("Date") }
+		if (defined $mtime && $mtime) { # set access time to current, set modified time to server's modified time; otherwise use start_t as the modified time?
+			$self->{last_mod_time} = $mtime;
+			$mtime = str2time($mtime);
 			utime time, $mtime, $file;
-			if (defined $self->{local_dir_path}) {	# do the same for the directory; this will allow us to query the server for the most recent batch of files
+			if (defined $self->{local_dir_path}) {	# do the same for the directory
 				utime time, $mtime, $self->{local_dir_path}
 			}
 		}
 		if ($self->{result}->header("X-Died") || !$self->{result}->is_success) {
 			if (my $died = $self->{result}->header("X-Died")) { $self->{status} .= $died.".....\n"; }
+#			if ($self->{refresh}) {
+#				return $self->lintWorkAround();
+#			}
 			if (-t) { # is this for piping?
 				if ($self->{autodelete}) {
 					unlink($file);
@@ -320,10 +388,10 @@ sub download { # call this with $self->download($url) where $self is an object o
 			} else {
 				$self->{status} .= "Transfer aborted, $file kept\n";
 				$diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
-#				die $diecode;
 				return 0;
 			}
 		}
+		if (defined $self->{result}->header("ETag")) { $self->{ETag} = $self->{result}->header("ETag") }
 		$self->{status} .= "Success: ".$self->{size}."/".$self->{length};
 		return 1; # good
 	} else { # the file is already closed?
@@ -332,9 +400,18 @@ sub download { # call this with $self->download($url) where $self is an object o
 		} else {
 			if (!defined $self->{size}) {$self->{size} = -1}
 			if (!defined $self->{length}) {$self->{length} = -1}
-			$self->{status} .= "File already closed? Can't be opened because it is open somewhere else? ".$self->{size}."/".$self->{length}."\n";
+			$self->{status} .= "File already closed? Can't be opened because it is open somewhere else? 500+ error?".$self->{size}."/".$self->{length}."\n";
 		}
-		$diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus=filealreadycreated:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
+		$diecode = sprintf("Str: %s\n=====\nCont: %s\n=====\nDec-Cont: %s\n=====\nRes-code: %u\n=====\nResHash: %s\n", $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->code, $self->{result});
+		if ($self->{refresh}) {
+			if ($self->result->is_error) { # || $self->result->is_redirect) {
+				warn $self->{remote_url}." result. procedure: ".$self->lintWorkAround()."(prev $error_made_fresh)\tfinal error: ".$self->result->code."\n";
+			} elsif ($self->result->is_redirect) {
+				warn $self->{remote_url}.". final code: ".$self->result->code
+			}
+		}
+		$self->{status} = sprintf("%s%sRefresh: %u\tCode: %u\tError? %u\tRedirect? %u\n",$diecode,$self->{status},$self->{refresh}, $self->result->code, $self->result->is_error, $self->result->is_redirect);
+#		$diecode=sprintf("res:%s\nstr:%s\ncontent:%s\ndec-cont:%s\nmess:%s\nstatus=filealreadycreated:%s\n", $self->{result}, $self->{result}->as_string, $self->{result}->content, $self->{result}->decoded_content, $self->{result}->message, $self->{status});
 		return 0; # baaaaaad
 	}
 }

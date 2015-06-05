@@ -45,7 +45,8 @@ requires('Class::Accessor::Constructor');
 requires('File::Spec');
 requires('File::stat');
 requires('integer');
-requires('Cwd')
+requires('Cwd');
+# requires('Config::IniFiles');
 
 features(
 	'Downloader' => [
@@ -64,7 +65,8 @@ features(
 		'HTTP::Date' => 1,
 		'HTTP::Request' => 1,
 		'HTTP::Response' => 1,
-		'Cwd' => 1
+		'Cwd' => 1,
+#		'Config::IniFiles' => 1
 	],
 );
 
